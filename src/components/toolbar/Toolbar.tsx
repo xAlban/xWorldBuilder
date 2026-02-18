@@ -3,6 +3,7 @@ import {
   FolderOpen,
   Save,
   Download,
+  Upload,
   Undo2,
   Redo2,
   MousePointer2,
@@ -12,8 +13,17 @@ import {
   Eye,
   EyeOff,
 } from 'lucide-react'
+import JSZip from 'jszip'
 import { useBuilderStore } from '@/stores/builderStore'
 import type { BuilderProject } from '@/types/builder'
+import type { ZoneDefinition } from '@/types/zone'
+import {
+  generateZoneDefinition,
+  getNewModels,
+  generateRegistryPatch,
+  getFilesToCopy,
+} from '@/utils/exportUtils'
+import { importZoneDefinition } from '@/utils/importUtils'
 
 function Toolbar() {
   const mode = useBuilderStore((s) => s.mode)
@@ -36,8 +46,8 @@ function Toolbar() {
     resetProject()
   }
 
-  // ---- Open project file ----
-  const handleOpen = async () => {
+  // ---- Open project file (.xwb.json) ----
+  const handleOpen = () => {
     if (isDirty && !confirm('Unsaved changes will be lost. Continue?')) return
     const input = document.createElement('input')
     input.type = 'file'
@@ -52,6 +62,23 @@ function Toolbar() {
         project.objects,
         project.customModels,
       )
+    }
+    input.click()
+  }
+
+  // ---- Import xTactics zone definition (.json) ----
+  const handleImport = () => {
+    if (isDirty && !confirm('Unsaved changes will be lost. Continue?')) return
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      const text = await file.text()
+      const zoneData = JSON.parse(text) as ZoneDefinition
+      const result = importZoneDefinition(zoneData)
+      useBuilderStore.getState().loadProject(result.zone, result.objects, [])
     }
     input.click()
   }
@@ -84,9 +111,90 @@ function Toolbar() {
     state.markClean()
   }
 
-  // ---- Export placeholder (Phase 6) ----
-  const handleExport = () => {
-    alert('Export pipeline not implemented yet (Phase 6)')
+  // ---- Export zone as zip for xTactics ----
+  const handleExport = async () => {
+    const state = useBuilderStore.getState()
+
+    if (state.objects.length === 0) {
+      alert('Nothing to export — place some objects first.')
+      return
+    }
+
+    // ---- Generate zone definition ----
+    const zoneDef = generateZoneDefinition(
+      state.zoneId,
+      state.zoneName,
+      state.groundType,
+      state.zoneWidth,
+      state.zoneHeight,
+      state.defaultSpawn,
+      state.objects,
+    )
+
+    // ---- Identify new models and generate patch ----
+    const newModels = getNewModels(state.objects)
+    const registryPatch = generateRegistryPatch(newModels)
+    const filesToCopy = getFilesToCopy(newModels)
+
+    // ---- Build zip ----
+    const zip = new JSZip()
+    zip.file('zone-definition.json', JSON.stringify(zoneDef, null, 2))
+    zip.file('registry-patch.ts', registryPatch)
+
+    // ---- Add model files to zip ----
+    if (filesToCopy.length > 0) {
+      const modelsFolder = zip.folder('models/objects')!
+      for (const fileName of filesToCopy) {
+        try {
+          const response = await fetch(`/models/objects/${fileName}`)
+          if (response.ok) {
+            const blob = await response.blob()
+            modelsFolder.file(fileName, blob)
+          }
+        } catch {
+          // ---- Skip files that fail to fetch ----
+        }
+      }
+    }
+
+    // ---- Add instructions ----
+    const instructions = [
+      `xWorldBuilder Export — ${state.zoneName} (${state.zoneId})`,
+      '='.repeat(50),
+      '',
+      'How to integrate into xTactics:',
+      '',
+      '1. Copy zone-definition.json content into a new ZoneDefinition',
+      '   in src/game/world/zoneDefinitions.ts',
+      '',
+      '2. Add the zone to WORLD_MAP.zones array',
+      '',
+    ]
+
+    if (newModels.length > 0) {
+      instructions.push(
+        `3. Copy the ${newModels.length} new model file(s) from models/objects/`,
+        '   to xTactics public/models/objects/',
+        '',
+        '4. Paste the entries from registry-patch.ts into',
+        '   DECORATION_MODELS in src/game/world/decorationRegistry.ts',
+      )
+    } else {
+      instructions.push(
+        '3. All models used are already in xTactics — no files to copy.',
+      )
+    }
+
+    zip.file('README.txt', instructions.join('\n'))
+
+    // ---- Download zip ----
+    const zipBlob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(zipBlob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${state.zoneId}-export.zip`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const btnBase =
@@ -101,22 +209,26 @@ function Toolbar() {
         <FilePlus className="h-3.5 w-3.5" />
         New
       </button>
-      <button
-        onClick={handleOpen}
-        className={btnDefault}
-        title="Open project"
-      >
+      <button onClick={handleOpen} className={btnDefault} title="Open project">
         <FolderOpen className="h-3.5 w-3.5" />
         Open
       </button>
-      <button onClick={handleSave} className={btnDefault} title="Save project">
+      <button
+        onClick={handleImport}
+        className={btnDefault}
+        title="Import xTactics zone"
+      >
+        <Upload className="h-3.5 w-3.5" />
+        Import
+      </button>
+      <button onClick={handleSave} className={btnDefault} title="Save project (Ctrl+S)">
         <Save className="h-3.5 w-3.5" />
         Save
         {isDirty && (
           <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
         )}
       </button>
-      <button onClick={handleExport} className={btnDefault} title="Export zone">
+      <button onClick={handleExport} className={btnDefault} title="Export zone (Ctrl+E)">
         <Download className="h-3.5 w-3.5" />
         Export
       </button>

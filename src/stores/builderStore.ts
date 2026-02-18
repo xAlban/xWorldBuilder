@@ -32,6 +32,10 @@ interface BuilderState {
   mode: BuilderMode
   placingModelId: string | null
 
+  // ---- Drag state ----
+  draggingId: string | null
+  dragStartPositions: Record<string, { x: number; z: number }>
+
   // ---- Scatter settings ----
   scatterCount: number
   scatterRadius: number
@@ -65,12 +69,16 @@ interface BuilderState {
   }) => void
   addObject: (obj: Omit<BuilderObject, 'id'>) => string
   updateObject: (id: string, updates: Partial<BuilderObject>) => void
+  updateObjects: (ids: string[], updates: Partial<BuilderObject>) => void
+  moveSelection: (leaderId: string, newPosition: { x: number; z: number }) => void
   removeObjects: (ids: string[]) => void
   duplicateObjects: (ids: string[]) => void
-  selectObject: (id: string, additive?: boolean) => void
+  selectObject: (id: string, additive?: boolean, force?: boolean) => void
   selectAll: () => void
   clearSelection: () => void
   setMode: (mode: BuilderMode, modelId?: string | null) => void
+  startDrag: (id: string, additive?: boolean) => void
+  stopDrag: () => void
   setGridSettings: (settings: {
     showGrid?: boolean
     gridSpacing?: number
@@ -113,6 +121,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   selectedIds: [],
   mode: 'select',
   placingModelId: null,
+  draggingId: null,
+  dragStartPositions: {},
   scatterCount: 5,
   scatterRadius: 10,
   showGrid: false,
@@ -163,6 +173,49 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       isDirty: true,
     })),
 
+  // ---- Batch update multiple objects at once ----
+  updateObjects: (ids, updates) => {
+    const state = get()
+    set({
+      undoStack: [
+        ...state.undoStack.slice(-MAX_HISTORY + 1),
+        { objects: state.objects },
+      ],
+      redoStack: [],
+      objects: state.objects.map((o) =>
+        ids.includes(o.id) ? { ...o, ...updates } : o,
+      ),
+      isDirty: true,
+    })
+  },
+
+  moveSelection: (leaderId, newPosition) => {
+    const state = get()
+    const startPos = state.dragStartPositions[leaderId]
+    if (!startPos) return
+
+    const dx = newPosition.x - startPos.x
+    const dz = newPosition.z - startPos.z
+
+    const newObjects = state.objects.map((obj) => {
+      if (state.selectedIds.includes(obj.id)) {
+        const originalPos = state.dragStartPositions[obj.id]
+        if (originalPos) {
+          return {
+            ...obj,
+            position: {
+              x: originalPos.x + dx,
+              z: originalPos.z + dz,
+            },
+          }
+        }
+      }
+      return obj
+    })
+
+    set({ objects: newObjects, isDirty: true })
+  },
+
   removeObjects: (ids) => {
     const state = get()
     // ---- Push undo snapshot before removing ----
@@ -204,11 +257,20 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
     })
   },
 
-  selectObject: (id, additive = false) =>
+  selectObject: (id, additive = false, force) =>
     set((s) => {
       if (additive) {
-        // ---- Toggle selection ----
+        // ---- Toggle selection or force state ----
         const isSelected = s.selectedIds.includes(id)
+        if (force !== undefined) {
+          if (force && !isSelected) {
+            return { selectedIds: [...s.selectedIds, id] }
+          }
+          if (!force && isSelected) {
+            return { selectedIds: s.selectedIds.filter((sid) => sid !== id) }
+          }
+          return {}
+        }
         return {
           selectedIds: isSelected
             ? s.selectedIds.filter((sid) => sid !== id)
@@ -229,6 +291,39 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       placingModelId: modelId,
       selectedIds: [],
     }),
+
+  // ---- Start dragging an object (pushes undo snapshot) ----
+  startDrag: (id, additive = false) => {
+    const state = get()
+    let newSelectedIds = state.selectedIds
+
+    if (!additive) {
+      if (!newSelectedIds.includes(id)) {
+        newSelectedIds = [id]
+      }
+    }
+
+    const startPositions: Record<string, { x: number; z: number }> = {}
+    state.objects.forEach((o) => {
+      if (newSelectedIds.includes(o.id)) {
+        startPositions[o.id] = { x: o.position.x, z: o.position.z }
+      }
+    })
+
+    set({
+      draggingId: id,
+      selectedIds: newSelectedIds,
+      dragStartPositions: startPositions,
+      undoStack: [
+        ...state.undoStack.slice(-MAX_HISTORY + 1),
+        { objects: state.objects },
+      ],
+      redoStack: [],
+    })
+  },
+
+  // ---- Stop dragging ----
+  stopDrag: () => set({ draggingId: null, dragStartPositions: {} }),
 
   setGridSettings: (settings) =>
     set(() => ({
@@ -310,6 +405,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       selectedIds: [],
       mode: 'select',
       placingModelId: null,
+      draggingId: null,
       undoStack: [],
       redoStack: [],
       isDirty: false,
@@ -330,6 +426,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       selectedIds: [],
       mode: 'select',
       placingModelId: null,
+      draggingId: null,
       undoStack: [],
       redoStack: [],
       isDirty: false,

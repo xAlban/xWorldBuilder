@@ -1,7 +1,25 @@
 import { useEffect } from 'react'
 import { useBuilderStore } from '@/stores/builderStore'
 
+// ---- Clipboard for copy/paste (module-scoped, not in store) ----
+let clipboard: typeof useBuilderStore extends { getState: () => infer S }
+  ? S extends { objects: (infer O)[] }
+    ? O[]
+    : never
+  : never = []
+
 export function useKeyboardShortcuts() {
+  // ---- Unsaved changes warning ----
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (useBuilderStore.getState().isDirty) {
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [])
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // ---- Skip shortcuts when typing in inputs ----
@@ -60,9 +78,90 @@ export function useKeyboardShortcuts() {
         return
       }
 
+      // ---- Ctrl+C: copy selected objects ----
+      if (ctrl && e.key === 'c') {
+        if (store.selectedIds.length > 0) {
+          e.preventDefault()
+          clipboard = store.objects.filter((o) =>
+            store.selectedIds.includes(o.id),
+          )
+        }
+        return
+      }
+
+      // ---- Ctrl+V: paste copied objects ----
+      if (ctrl && e.key === 'v') {
+        if (clipboard.length > 0) {
+          e.preventDefault()
+          store.pushSnapshot()
+          const newIds: string[] = []
+          for (const obj of clipboard) {
+            const id = store.addObject({
+              ...obj,
+              position: {
+                x: obj.position.x + 2,
+                z: obj.position.z + 2,
+              },
+            })
+            newIds.push(id)
+          }
+          // ---- Select the pasted objects ----
+          for (const id of newIds) {
+            store.selectObject(id, true)
+          }
+        }
+        return
+      }
+
+      // ---- Ctrl+S: save project ----
+      if (ctrl && e.key === 's') {
+        e.preventDefault()
+        // ---- Trigger save via toolbar button click ----
+        document
+          .querySelector<HTMLButtonElement>('[title*="Save project"]')
+          ?.click()
+        return
+      }
+
+      // ---- Ctrl+E: export zone ----
+      if (ctrl && e.key === 'e') {
+        e.preventDefault()
+        document
+          .querySelector<HTMLButtonElement>('[title*="Export zone"]')
+          ?.click()
+        return
+      }
+
       // ---- G: toggle grid ----
       if (e.key === 'g' || e.key === 'G') {
         store.setGridSettings({ showGrid: !store.showGrid })
+        return
+      }
+
+      // ---- Arrow keys: nudge selected objects ----
+      if (
+        ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)
+      ) {
+        if (store.selectedIds.length > 0) {
+          e.preventDefault()
+          const step = e.shiftKey ? 5 : 1
+          const dx =
+            e.key === 'ArrowRight' ? step : e.key === 'ArrowLeft' ? -step : 0
+          const dz =
+            e.key === 'ArrowDown' ? step : e.key === 'ArrowUp' ? -step : 0
+
+          for (const id of store.selectedIds) {
+            const obj = store.objects.find((o) => o.id === id)
+            if (obj) {
+              store.updateObject(id, {
+                position: {
+                  x: obj.position.x + dx,
+                  z: obj.position.z + dz,
+                },
+              })
+            }
+          }
+        }
         return
       }
     }

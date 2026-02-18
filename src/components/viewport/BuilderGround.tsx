@@ -1,13 +1,20 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, useMemo, useEffect } from 'react'
 import { useBuilderStore } from '@/stores/builderStore'
 import { CATALOG_BY_ID, getModelPath } from '@/catalog/megakitRegistry'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
+import { useGLTF } from '@react-three/drei'
 
 // ---- Ground colors matching xTactics ----
 const GROUND_COLORS: Record<string, string> = {
   grass: '#4a8c3f',
   rock: '#6a6a6a',
+}
+
+// ---- Portal colors matching xTactics ----
+const PORTAL_COLORS: Record<string, string> = {
+  __combatPortal: '#e74c3c',
+  __zonePortal: '#3498db',
 }
 
 function BuilderGround() {
@@ -21,10 +28,12 @@ function BuilderGround() {
   const gridSpacing = useBuilderStore((s) => s.gridSpacing)
   const scatterCount = useBuilderStore((s) => s.scatterCount)
   const scatterRadius = useBuilderStore((s) => s.scatterRadius)
+  const draggingId = useBuilderStore((s) => s.draggingId)
   const addObject = useBuilderStore((s) => s.addObject)
+  const moveSelection = useBuilderStore((s) => s.moveSelection)
   const pushSnapshot = useBuilderStore((s) => s.pushSnapshot)
   const clearSelection = useBuilderStore((s) => s.clearSelection)
-  const setMode = useBuilderStore((s) => s.setMode)
+  const stopDrag = useBuilderStore((s) => s.stopDrag)
   const meshRef = useRef<Mesh>(null)
   const [hoverPos, setHoverPos] = useState<{
     x: number
@@ -43,10 +52,17 @@ function BuilderGround() {
     [snapToGrid, gridSpacing],
   )
 
+  // ---- Check if placing a portal type ----
+  const isPortalPlacement =
+    placingModelId === '__combatPortal' || placingModelId === '__zonePortal'
+
   // ---- Handle ground click to place objects ----
   const handleClick = useCallback(
     (e: ThreeEvent<MouseEvent>) => {
       e.stopPropagation()
+
+      // ---- If dragging, stop drag on click (pointerUp handles it too) ----
+      if (draggingId) return
 
       if (mode === 'select') {
         clearSelection()
@@ -56,8 +72,36 @@ function BuilderGround() {
       if (mode === 'place' && placingModelId) {
         const point = e.point
         const pos = snapPosition(point.x, point.z)
-        const catalogEntry = CATALOG_BY_ID[placingModelId]
 
+        // ---- Portal placement ----
+        if (
+          placingModelId === '__combatPortal' ||
+          placingModelId === '__zonePortal'
+        ) {
+          pushSnapshot()
+          addObject({
+            modelId: placingModelId,
+            position: pos,
+            rotationY: 0,
+            scale: 1,
+            collisionSize: { x: 1, z: 1 },
+            noCollision: false,
+            type:
+              placingModelId === '__combatPortal'
+                ? 'combatPortal'
+                : 'zonePortal',
+            ...(placingModelId === '__zonePortal'
+              ? {
+                  targetZoneId: '',
+                  targetSpawnPosition: { x: 0, z: 0 },
+                }
+              : {}),
+          })
+          return
+        }
+
+        // ---- Decoration placement ----
+        const catalogEntry = CATALOG_BY_ID[placingModelId]
         pushSnapshot()
         addObject({
           modelId: placingModelId,
@@ -74,7 +118,7 @@ function BuilderGround() {
         return
       }
 
-      if (mode === 'scatter' && placingModelId) {
+      if (mode === 'scatter' && placingModelId && !isPortalPlacement) {
         const point = e.point
         const catalogEntry = CATALOG_BY_ID[placingModelId]
 
@@ -118,20 +162,49 @@ function BuilderGround() {
       clearSelection,
       scatterCount,
       scatterRadius,
-      setMode,
+      draggingId,
+      isPortalPlacement,
     ],
   )
 
-  // ---- Track hover position for ghost preview ----
+  // ---- Track hover position for ghost preview + drag movement ----
   const handlePointerMove = useCallback(
     (e: ThreeEvent<PointerEvent>) => {
+      // ---- Drag mode: update dragged object position ----
+      if (draggingId) {
+        const pos = snapPosition(e.point.x, e.point.z)
+        moveSelection(draggingId, pos)
+        return
+      }
+
       if (mode === 'place' || mode === 'scatter') {
         const pos = snapPosition(e.point.x, e.point.z)
         setHoverPos(pos)
       }
     },
-    [mode, snapPosition],
+    [mode, snapPosition, draggingId, moveSelection],
   )
+
+  // ---- Stop drag on pointer up anywhere on the ground ----
+  const handlePointerUp = useCallback(() => {
+    if (draggingId) {
+      stopDrag()
+      document.body.style.cursor = 'default'
+    }
+  }, [draggingId, stopDrag])
+
+  // ---- Also listen for global pointer up in case mouse leaves the ground ----
+  useEffect(() => {
+    const handleGlobalPointerUp = () => {
+      const state = useBuilderStore.getState()
+      if (state.draggingId) {
+        state.stopDrag()
+        document.body.style.cursor = 'default'
+      }
+    }
+    window.addEventListener('pointerup', handleGlobalPointerUp)
+    return () => window.removeEventListener('pointerup', handleGlobalPointerUp)
+  }, [])
 
   const handlePointerLeave = useCallback(() => {
     setHoverPos(null)
@@ -145,6 +218,7 @@ function BuilderGround() {
         position={[0, 0, 0]}
         onClick={handleClick}
         onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerLeave}
       >
         <planeGeometry args={[zoneWidth, zoneHeight]} />
@@ -165,6 +239,7 @@ function BuilderGround() {
             position={hoverPos}
             scatterMode={mode === 'scatter'}
             scatterRadius={scatterRadius}
+            isPortal={isPortalPlacement}
           />
         )}
     </>
@@ -177,13 +252,16 @@ function GhostPreview({
   position,
   scatterMode,
   scatterRadius,
+  isPortal,
 }: {
   modelId: string
   position: { x: number; z: number }
   scatterMode: boolean
   scatterRadius: number
+  isPortal: boolean
 }) {
   const catalogEntry = CATALOG_BY_ID[modelId]
+  const portalColor = PORTAL_COLORS[modelId]
 
   return (
     <group position={[position.x, 0, position.z]}>
@@ -201,27 +279,41 @@ function GhostPreview({
         </mesh>
       )}
 
-      {/* ---- Model preview ---- */}
-      {catalogEntry && <GhostModel fileName={catalogEntry.fileName} />}
+      {/* ---- Portal ghost or model ghost ---- */}
+      {isPortal && portalColor ? (
+        <mesh>
+          <torusGeometry args={[0.6, 0.15, 16, 32]} />
+          <meshBasicMaterial color={portalColor} transparent opacity={0.5} />
+        </mesh>
+      ) : (
+        catalogEntry && <GhostModel fileName={catalogEntry.fileName} />
+      )}
     </group>
   )
 }
 
 // ---- Load and display a ghost model ----
-import { useGLTF } from '@react-three/drei'
-import { useMemo } from 'react'
-
 function GhostModel({ fileName }: { fileName: string }) {
   const path = getModelPath(fileName)
   const { scene } = useGLTF(path)
   const cloned = useMemo(() => {
     const clone = scene.clone(true)
     clone.traverse((child) => {
-      if ('material' in child && child.material) {
-        const mat = (child.material as { clone: () => typeof child.material }).clone()
-        ;(mat as { transparent: boolean; opacity: number }).transparent = true
-        ;(mat as { transparent: boolean; opacity: number }).opacity = 0.5
-        child.material = mat
+      if ((child as Mesh).isMesh) {
+        const mesh = child as Mesh
+        if (Array.isArray(mesh.material)) {
+          mesh.material = mesh.material.map((m) => {
+            const newMat = m.clone()
+            newMat.transparent = true
+            newMat.opacity = 0.5
+            return newMat
+          })
+        } else {
+          const newMat = mesh.material.clone()
+          newMat.transparent = true
+          newMat.opacity = 0.5
+          mesh.material = newMat
+        }
       }
     })
     return clone
