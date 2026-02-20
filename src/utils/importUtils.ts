@@ -1,5 +1,5 @@
 import type { BuilderObject } from '@/types/builder'
-import type { ZoneDefinition, ZoneObject } from '@/types/zone'
+import type { ZoneDefinition, ZoneObject, HeightmapConfig } from '@/types/zone'
 import { CATALOG_BY_ID } from '@/catalog/megakitRegistry'
 
 // ---- Convert a ZoneObject from xTactics into a BuilderObject ----
@@ -13,7 +13,7 @@ function zoneObjectToBuilder(
   return {
     id: `obj-${index + 1}`,
     modelId: obj.modelId ?? 'unknown',
-    position: { x: obj.position.x, z: obj.position.z },
+    position: { x: obj.position.x, y: obj.position.y ?? 0, z: obj.position.z },
     rotationY: obj.rotationY ?? 0,
     scale: obj.scale ?? 1,
     collisionSize: {
@@ -21,6 +21,7 @@ function zoneObjectToBuilder(
       z: obj.size.z || entry?.defaultCollisionSize.z || 1,
     },
     noCollision: obj.noCollision ?? false,
+    walkable: obj.walkable ?? false,
     type: obj.type,
     // ---- Preserve portal fields ----
     ...(obj.targetZoneId ? { targetZoneId: obj.targetZoneId } : {}),
@@ -39,6 +40,7 @@ export function importZoneDefinition(zone: ZoneDefinition): {
     width: number
     height: number
     defaultSpawn: { x: number; z: number }
+    heightmap?: HeightmapConfig | null
   }
   objects: BuilderObject[]
 } {
@@ -50,6 +52,7 @@ export function importZoneDefinition(zone: ZoneDefinition): {
       width: zone.width,
       height: zone.height,
       defaultSpawn: zone.defaultSpawn,
+      heightmap: zone.heightmap ?? null,
     },
     objects: zone.objects.map((obj, i) => zoneObjectToBuilder(obj, i)),
   }

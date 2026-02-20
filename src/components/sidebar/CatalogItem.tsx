@@ -11,17 +11,23 @@ function CatalogItem({ entry }: CatalogItemProps) {
   const mode = useBuilderStore((s) => s.mode)
   const placingModelId = useBuilderStore((s) => s.placingModelId)
   const setMode = useBuilderStore((s) => s.setMode)
+  const setPlacingModel = useBuilderStore((s) => s.setPlacingModel)
 
-  const isActive = mode === 'place' && placingModelId === entry.modelId
+  const isActive =
+    (mode === 'place' || mode === 'scatter') &&
+    placingModelId === entry.modelId
 
   const handleClick = useCallback(() => {
     if (isActive) {
       // ---- Deselect ----
       setMode('select')
+    } else if (mode === 'scatter') {
+      // ---- Stay in scatter mode, just switch model ----
+      setPlacingModel(entry.modelId)
     } else {
       setMode('place', entry.modelId)
     }
-  }, [isActive, setMode, entry.modelId])
+  }, [isActive, mode, setMode, setPlacingModel, entry.modelId])
 
   return (
     <button

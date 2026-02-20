@@ -5,7 +5,7 @@ import type {
   BuilderSnapshot,
   CustomModelEntry,
 } from '@/types/builder'
-import type { GroundType } from '@/types/zone'
+import type { GroundType, HeightmapConfig } from '@/types/zone'
 
 // ---- Max undo history size ----
 const MAX_HISTORY = 50
@@ -18,6 +18,9 @@ interface BuilderState {
   zoneWidth: number
   zoneHeight: number
   defaultSpawn: { x: number; z: number }
+
+  // ---- Terrain heightmap ----
+  heightmap: HeightmapConfig | null
 
   // ---- Placed objects ----
   objects: BuilderObject[]
@@ -34,7 +37,7 @@ interface BuilderState {
 
   // ---- Drag state ----
   draggingId: string | null
-  dragStartPositions: Record<string, { x: number; z: number }>
+  dragStartPositions: Record<string, { x: number; y: number; z: number }>
 
   // ---- Scatter settings ----
   scatterCount: number
@@ -47,6 +50,10 @@ interface BuilderState {
 
   // ---- Ground display ----
   groundTransparent: boolean
+
+  // ---- Box selection ----
+  boxSelectStart: { screenX: number; screenY: number; worldX: number; worldZ: number } | null
+  boxSelectCurrent: { screenX: number; screenY: number; worldX: number; worldZ: number } | null
 
   // ---- Undo/redo ----
   undoStack: BuilderSnapshot[]
@@ -67,16 +74,18 @@ interface BuilderState {
     height?: number
     defaultSpawn?: { x: number; z: number }
   }) => void
+  setHeightmap: (heightmap: HeightmapConfig | null) => void
   addObject: (obj: Omit<BuilderObject, 'id'>) => string
   updateObject: (id: string, updates: Partial<BuilderObject>) => void
   updateObjects: (ids: string[], updates: Partial<BuilderObject>) => void
-  moveSelection: (leaderId: string, newPosition: { x: number; z: number }) => void
+  moveSelection: (leaderId: string, newPosition: { x: number; y: number; z: number }) => void
   removeObjects: (ids: string[]) => void
   duplicateObjects: (ids: string[]) => void
   selectObject: (id: string, additive?: boolean, force?: boolean) => void
   selectAll: () => void
   clearSelection: () => void
   setMode: (mode: BuilderMode, modelId?: string | null) => void
+  setPlacingModel: (modelId: string) => void
   startDrag: (id: string, additive?: boolean) => void
   stopDrag: () => void
   setGridSettings: (settings: {
@@ -89,6 +98,10 @@ interface BuilderState {
     count?: number
     radius?: number
   }) => void
+  startBoxSelect: (screenX: number, screenY: number, worldX: number, worldZ: number) => void
+  updateBoxSelect: (screenX: number, screenY: number, worldX: number, worldZ: number) => void
+  commitBoxSelect: (additive: boolean) => void
+  cancelBoxSelect: () => void
   pushSnapshot: () => void
   undo: () => void
   redo: () => void
@@ -100,6 +113,7 @@ interface BuilderState {
       width: number
       height: number
       defaultSpawn: { x: number; z: number }
+      heightmap?: HeightmapConfig | null
     },
     objects: BuilderObject[],
     customModels: CustomModelEntry[],
@@ -116,6 +130,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   zoneWidth: 200,
   zoneHeight: 200,
   defaultSpawn: { x: 0, z: 0 },
+  heightmap: null,
   objects: [],
   customModels: [],
   selectedIds: [],
@@ -129,6 +144,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
   gridSpacing: 5,
   snapToGrid: false,
   groundTransparent: false,
+  boxSelectStart: null,
+  boxSelectCurrent: null,
   undoStack: [],
   redoStack: [],
   isDirty: false,
@@ -154,6 +171,8 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       ],
       redoStack: [],
     })),
+
+  setHeightmap: (heightmap) => set({ heightmap, isDirty: true }),
 
   addObject: (obj) => {
     const state = get()
@@ -205,6 +224,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
             ...obj,
             position: {
               x: originalPos.x + dx,
+              y: originalPos.y,
               z: originalPos.z + dz,
             },
           }
@@ -240,7 +260,7 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       return {
         ...o,
         id: newId,
-        position: { x: o.position.x + 2, z: o.position.z + 2 },
+        position: { x: o.position.x + 2, y: o.position.y, z: o.position.z + 2 },
       }
     })
     const newIds = newObjects.map((o) => o.id)
@@ -292,6 +312,9 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       selectedIds: [],
     }),
 
+  // ---- Update placing model without changing mode ----
+  setPlacingModel: (modelId) => set({ placingModelId: modelId }),
+
   // ---- Start dragging an object (pushes undo snapshot) ----
   startDrag: (id, additive = false) => {
     const state = get()
@@ -303,10 +326,10 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       }
     }
 
-    const startPositions: Record<string, { x: number; z: number }> = {}
+    const startPositions: Record<string, { x: number; y: number; z: number }> = {}
     state.objects.forEach((o) => {
       if (newSelectedIds.includes(o.id)) {
-        startPositions[o.id] = { x: o.position.x, z: o.position.z }
+        startPositions[o.id] = { x: o.position.x, y: o.position.y, z: o.position.z }
       }
     })
 
@@ -348,6 +371,55 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         ? { scatterRadius: settings.radius }
         : {}),
     })),
+
+  // ---- Box selection actions ----
+  startBoxSelect: (screenX, screenY, worldX, worldZ) =>
+    set({
+      boxSelectStart: { screenX, screenY, worldX, worldZ },
+      boxSelectCurrent: { screenX, screenY, worldX, worldZ },
+    }),
+
+  updateBoxSelect: (screenX, screenY, worldX, worldZ) =>
+    set({ boxSelectCurrent: { screenX, screenY, worldX, worldZ } }),
+
+  commitBoxSelect: (additive) => {
+    const state = get()
+    if (!state.boxSelectStart || !state.boxSelectCurrent) {
+      set({ boxSelectStart: null, boxSelectCurrent: null })
+      return
+    }
+
+    // ---- Compute world-space rect ----
+    const minX = Math.min(state.boxSelectStart.worldX, state.boxSelectCurrent.worldX)
+    const maxX = Math.max(state.boxSelectStart.worldX, state.boxSelectCurrent.worldX)
+    const minZ = Math.min(state.boxSelectStart.worldZ, state.boxSelectCurrent.worldZ)
+    const maxZ = Math.max(state.boxSelectStart.worldZ, state.boxSelectCurrent.worldZ)
+
+    // ---- Find objects within the rect ----
+    const insideIds = state.objects
+      .filter(
+        (obj) =>
+          obj.position.x >= minX &&
+          obj.position.x <= maxX &&
+          obj.position.z >= minZ &&
+          obj.position.z <= maxZ,
+      )
+      .map((obj) => obj.id)
+
+    // ---- Merge with existing selection if additive ----
+    const newSelectedIds = additive
+      ? [...new Set([...state.selectedIds, ...insideIds])]
+      : insideIds
+
+    set({
+      selectedIds: newSelectedIds,
+      boxSelectStart: null,
+      boxSelectCurrent: null,
+    })
+  },
+
+  cancelBoxSelect: () =>
+    set({ boxSelectStart: null, boxSelectCurrent: null }),
 
   pushSnapshot: () =>
     set((s) => ({
@@ -393,6 +465,16 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
         maxId = Math.max(maxId, parseInt(match[1]!, 10))
       }
     }
+    // ---- Migrate old projects: default Y to 0, walkable to false ----
+    const migratedObjects = objects.map((obj) => ({
+      ...obj,
+      position: {
+        x: obj.position.x,
+        y: obj.position.y ?? 0,
+        z: obj.position.z,
+      },
+      walkable: obj.walkable ?? false,
+    }))
     set({
       zoneId: zone.id,
       zoneName: zone.name,
@@ -400,12 +482,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       zoneWidth: zone.width,
       zoneHeight: zone.height,
       defaultSpawn: zone.defaultSpawn,
-      objects,
+      heightmap: zone.heightmap ?? null,
+      objects: migratedObjects,
       customModels,
       selectedIds: [],
       mode: 'select',
       placingModelId: null,
       draggingId: null,
+      boxSelectStart: null,
+      boxSelectCurrent: null,
       undoStack: [],
       redoStack: [],
       isDirty: false,
@@ -421,12 +506,15 @@ export const useBuilderStore = create<BuilderState>((set, get) => ({
       zoneWidth: 200,
       zoneHeight: 200,
       defaultSpawn: { x: 0, z: 0 },
+      heightmap: null,
       objects: [],
       customModels: [],
       selectedIds: [],
       mode: 'select',
       placingModelId: null,
       draggingId: null,
+      boxSelectStart: null,
+      boxSelectCurrent: null,
       undoStack: [],
       redoStack: [],
       isDirty: false,

@@ -5,13 +5,15 @@ export interface BuilderObject {
   // ---- Unique builder-side ID ----
   id: string
   modelId: string
-  position: { x: number; z: number }
+  position: { x: number; y: number; z: number }
   rotationY: number
   scale: number
   // ---- Collision bounding box half-extents ----
   collisionSize: { x: number; z: number }
   // ---- Whether this object has no collision (walkable) ----
   noCollision: boolean
+  // ---- Whether this is a walkable surface (player can walk on top) ----
+  walkable: boolean
   // ---- Object type for export ----
   type: 'decoration' | 'combatPortal' | 'zonePortal'
   // ---- Zone portal fields ----
@@ -37,6 +39,7 @@ export interface BuilderProject {
     width: number
     height: number
     defaultSpawn: { x: number; z: number }
+    heightmap?: import('@/types/zone').HeightmapConfig | null
   }
   objects: BuilderObject[]
   customModels: CustomModelEntry[]

@@ -1,15 +1,20 @@
 import { useCallback, useRef, useState, useMemo, useEffect } from 'react'
+import * as THREE from 'three'
 import { useBuilderStore } from '@/stores/builderStore'
 import { CATALOG_BY_ID, getModelPath } from '@/catalog/megakitRegistry'
+import { createTerrain } from '@/utils/terrainUtils'
 import type { ThreeEvent } from '@react-three/fiber'
 import type { Mesh } from 'three'
 import { useGLTF } from '@react-three/drei'
 
 // ---- Ground colors matching xTactics ----
 const GROUND_COLORS: Record<string, string> = {
-  grass: '#4a8c3f',
+  grass: '#70c048',
   rock: '#6a6a6a',
 }
+
+// ---- Terrain subdivision: 1 segment per 2 world units (matches xTactics) ----
+const SEGMENT_DENSITY = 2
 
 // ---- Portal colors matching xTactics ----
 const PORTAL_COLORS: Record<string, string> = {
@@ -22,6 +27,7 @@ function BuilderGround() {
   const zoneHeight = useBuilderStore((s) => s.zoneHeight)
   const groundType = useBuilderStore((s) => s.groundType)
   const groundTransparent = useBuilderStore((s) => s.groundTransparent)
+  const heightmap = useBuilderStore((s) => s.heightmap)
   const mode = useBuilderStore((s) => s.mode)
   const placingModelId = useBuilderStore((s) => s.placingModelId)
   const snapToGrid = useBuilderStore((s) => s.snapToGrid)
@@ -34,11 +40,43 @@ function BuilderGround() {
   const pushSnapshot = useBuilderStore((s) => s.pushSnapshot)
   const clearSelection = useBuilderStore((s) => s.clearSelection)
   const stopDrag = useBuilderStore((s) => s.stopDrag)
+  const startBoxSelect = useBuilderStore((s) => s.startBoxSelect)
+  const updateBoxSelect = useBuilderStore((s) => s.updateBoxSelect)
+  const commitBoxSelect = useBuilderStore((s) => s.commitBoxSelect)
   const meshRef = useRef<Mesh>(null)
+
+  // ---- Build terrain from heightmap config ----
+  const terrain = useMemo(
+    () => (heightmap ? createTerrain(heightmap) : null),
+    [heightmap],
+  )
+
+  // ---- Build displaced geometry when heightmap is active ----
+  const geometry = useMemo(() => {
+    if (!terrain) return null
+    const segsX = Math.ceil(zoneWidth / SEGMENT_DENSITY)
+    const segsZ = Math.ceil(zoneHeight / SEGMENT_DENSITY)
+    const geo = new THREE.PlaneGeometry(zoneWidth, zoneHeight, segsX, segsZ)
+    geo.rotateX(-Math.PI / 2)
+    const pos = geo.attributes.position!
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, terrain.getHeightAt(pos.getX(i), pos.getZ(i)))
+    }
+    geo.computeVertexNormals()
+    return geo
+  }, [zoneWidth, zoneHeight, terrain])
   const [hoverPos, setHoverPos] = useState<{
     x: number
     z: number
   } | null>(null)
+  // ---- Track pointer down for box-select drag detection ----
+  const groundPointerDown = useRef<{
+    screenX: number
+    screenY: number
+    worldX: number
+    worldZ: number
+  } | null>(null)
+  const isBoxSelecting = useRef(false)
 
   // ---- Snap position to grid if enabled ----
   const snapPosition = useCallback(
@@ -56,10 +94,34 @@ function BuilderGround() {
   const isPortalPlacement =
     placingModelId === '__combatPortal' || placingModelId === '__zonePortal'
 
+  // ---- Handle pointer down on ground for box-select ----
+  const handlePointerDown = useCallback(
+    (e: ThreeEvent<PointerEvent>) => {
+      if (mode === 'select' && !draggingId && e.nativeEvent.button === 0) {
+        groundPointerDown.current = {
+          screenX: e.nativeEvent.clientX,
+          screenY: e.nativeEvent.clientY,
+          worldX: e.point.x,
+          worldZ: e.point.z,
+        }
+        isBoxSelecting.current = false
+      }
+    },
+    [mode, draggingId],
+  )
+
   // ---- Handle ground click to place objects ----
   const handleClick = useCallback(
     (e: ThreeEvent<MouseEvent>) => {
       e.stopPropagation()
+
+      // ---- If box-select just ended, skip click ----
+      if (isBoxSelecting.current) {
+        isBoxSelecting.current = false
+        groundPointerDown.current = null
+        return
+      }
+      groundPointerDown.current = null
 
       // ---- If dragging, stop drag on click (pointerUp handles it too) ----
       if (draggingId) return
@@ -81,11 +143,12 @@ function BuilderGround() {
           pushSnapshot()
           addObject({
             modelId: placingModelId,
-            position: pos,
+            position: { ...pos, y: 0 },
             rotationY: 0,
             scale: 1,
             collisionSize: { x: 1, z: 1 },
             noCollision: false,
+            walkable: false,
             type:
               placingModelId === '__combatPortal'
                 ? 'combatPortal'
@@ -105,7 +168,7 @@ function BuilderGround() {
         pushSnapshot()
         addObject({
           modelId: placingModelId,
-          position: pos,
+          position: { ...pos, y: 0 },
           rotationY: 0,
           scale: catalogEntry?.defaultScale ?? 1,
           collisionSize: catalogEntry?.defaultCollisionSize ?? {
@@ -113,6 +176,7 @@ function BuilderGround() {
             z: 1,
           },
           noCollision: !(catalogEntry?.hasCollision ?? true),
+          walkable: false,
           type: 'decoration',
         })
         return
@@ -139,7 +203,7 @@ function BuilderGround() {
 
           addObject({
             modelId: placingModelId,
-            position: pos,
+            position: { ...pos, y: 0 },
             rotationY,
             scale,
             collisionSize: catalogEntry?.defaultCollisionSize ?? {
@@ -147,6 +211,7 @@ function BuilderGround() {
               z: 1,
             },
             noCollision: !(catalogEntry?.hasCollision ?? true),
+            walkable: false,
             type: 'decoration',
           })
         }
@@ -167,13 +232,46 @@ function BuilderGround() {
     ],
   )
 
-  // ---- Track hover position for ghost preview + drag movement ----
+  // ---- Track hover position for ghost preview + drag movement + box-select ----
   const handlePointerMove = useCallback(
     (e: ThreeEvent<PointerEvent>) => {
-      // ---- Drag mode: update dragged object position ----
+      // ---- Drag mode: update dragged object position (preserves Y) ----
       if (draggingId) {
         const pos = snapPosition(e.point.x, e.point.z)
-        moveSelection(draggingId, pos)
+        const leaderObj = useBuilderStore
+          .getState()
+          .objects.find((o) => o.id === draggingId)
+        moveSelection(draggingId, {
+          ...pos,
+          y: leaderObj?.position.y ?? 0,
+        })
+        return
+      }
+
+      // ---- Box-select: detect drag threshold then update ----
+      if (mode === 'select' && groundPointerDown.current) {
+        const dx = e.nativeEvent.clientX - groundPointerDown.current.screenX
+        const dy = e.nativeEvent.clientY - groundPointerDown.current.screenY
+        const dist = Math.sqrt(dx * dx + dy * dy)
+
+        if (!isBoxSelecting.current && dist > 5) {
+          isBoxSelecting.current = true
+          startBoxSelect(
+            groundPointerDown.current.screenX,
+            groundPointerDown.current.screenY,
+            groundPointerDown.current.worldX,
+            groundPointerDown.current.worldZ,
+          )
+        }
+
+        if (isBoxSelecting.current) {
+          updateBoxSelect(
+            e.nativeEvent.clientX,
+            e.nativeEvent.clientY,
+            e.point.x,
+            e.point.z,
+          )
+        }
         return
       }
 
@@ -182,24 +280,42 @@ function BuilderGround() {
         setHoverPos(pos)
       }
     },
-    [mode, snapPosition, draggingId, moveSelection],
+    [mode, snapPosition, draggingId, moveSelection, startBoxSelect, updateBoxSelect],
   )
 
-  // ---- Stop drag on pointer up anywhere on the ground ----
-  const handlePointerUp = useCallback(() => {
-    if (draggingId) {
-      stopDrag()
-      document.body.style.cursor = 'default'
-    }
-  }, [draggingId, stopDrag])
+  // ---- Stop drag or commit box-select on pointer up ----
+  const handlePointerUp = useCallback(
+    (e: ThreeEvent<PointerEvent>) => {
+      if (draggingId) {
+        stopDrag()
+        document.body.style.cursor = 'default'
+      }
+
+      // ---- Commit box selection ----
+      if (isBoxSelecting.current) {
+        const additive =
+          e.nativeEvent.shiftKey || e.nativeEvent.ctrlKey || e.nativeEvent.metaKey
+        commitBoxSelect(additive)
+      }
+      groundPointerDown.current = null
+    },
+    [draggingId, stopDrag, commitBoxSelect],
+  )
 
   // ---- Also listen for global pointer up in case mouse leaves the ground ----
   useEffect(() => {
-    const handleGlobalPointerUp = () => {
+    const handleGlobalPointerUp = (e: PointerEvent) => {
       const state = useBuilderStore.getState()
       if (state.draggingId) {
         state.stopDrag()
         document.body.style.cursor = 'default'
+      }
+      // ---- Commit box-select if pointer leaves the ground ----
+      if (isBoxSelecting.current) {
+        const additive = e.shiftKey || e.ctrlKey || e.metaKey
+        state.commitBoxSelect(additive)
+        isBoxSelecting.current = false
+        groundPointerDown.current = null
       }
     }
     window.addEventListener('pointerup', handleGlobalPointerUp)
@@ -212,23 +328,45 @@ function BuilderGround() {
 
   return (
     <>
-      <mesh
-        ref={meshRef}
-        rotation-x={-Math.PI / 2}
-        position={[0, 0, 0]}
-        onClick={handleClick}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerLeave}
-      >
-        <planeGeometry args={[zoneWidth, zoneHeight]} />
-        <meshStandardMaterial
-          color={GROUND_COLORS[groundType] ?? '#4a8c3f'}
-          transparent={groundTransparent}
-          opacity={groundTransparent ? 0.3 : 1}
-          wireframe={groundTransparent}
-        />
-      </mesh>
+      {geometry ? (
+        // ---- Displaced terrain mesh (heightmap active) ----
+        <mesh
+          ref={meshRef}
+          geometry={geometry}
+          onPointerDown={handlePointerDown}
+          onClick={handleClick}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerLeave}
+        >
+          <meshStandardMaterial
+            color={GROUND_COLORS[groundType] ?? '#70c048'}
+            transparent={groundTransparent}
+            opacity={groundTransparent ? 0.3 : 1}
+            wireframe={groundTransparent}
+          />
+        </mesh>
+      ) : (
+        // ---- Flat ground plane (no heightmap) ----
+        <mesh
+          ref={meshRef}
+          rotation-x={-Math.PI / 2}
+          position={[0, 0, 0]}
+          onPointerDown={handlePointerDown}
+          onClick={handleClick}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerLeave}
+        >
+          <planeGeometry args={[zoneWidth, zoneHeight]} />
+          <meshStandardMaterial
+            color={GROUND_COLORS[groundType] ?? '#70c048'}
+            transparent={groundTransparent}
+            opacity={groundTransparent ? 0.3 : 1}
+            wireframe={groundTransparent}
+          />
+        </mesh>
+      )}
 
       {/* ---- Ghost preview at hover position ---- */}
       {hoverPos &&

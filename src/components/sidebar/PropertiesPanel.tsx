@@ -84,6 +84,16 @@ function SingleObjectPanel({
           }
         />
         <NumberField
+          label="Y"
+          value={obj.position.y}
+          onChange={(v) =>
+            updateObject(obj.id, {
+              position: { ...obj.position, y: v },
+            })
+          }
+          step={0.1}
+        />
+        <NumberField
           label="Z"
           value={obj.position.z}
           onChange={(v) =>
@@ -166,6 +176,23 @@ function SingleObjectPanel({
               />
             </div>
           )}
+
+          {/* ---- Walkable surface toggle ---- */}
+          <div className="flex items-center gap-2 px-2">
+            <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+              <input
+                type="checkbox"
+                checked={!!obj.walkable}
+                onChange={(e) =>
+                  updateObject(obj.id, {
+                    walkable: e.target.checked,
+                  })
+                }
+                className="h-3 w-3"
+              />
+              Walkable surface
+            </label>
+          </div>
         </>
       )}
 
@@ -256,12 +283,16 @@ function MultiObjectPanel({
     )
     const scales = new Set(objects.map((o) => Math.round(o.scale * 100) / 100))
     const collisions = new Set(objects.map((o) => !o.noCollision))
+    const ys = new Set(objects.map((o) => Math.round(o.position.y * 100) / 100))
+    const walkables = new Set(objects.map((o) => !!o.walkable))
 
     return {
       rotation: rotations.size === 1 ? [...rotations][0]! : undefined,
       scale: scales.size === 1 ? [...scales][0]! : undefined,
       hasCollision:
         collisions.size === 1 ? [...collisions][0]! : undefined,
+      y: ys.size === 1 ? [...ys][0]! : undefined,
+      walkable: walkables.size === 1 ? [...walkables][0]! : undefined,
     }
   }, [objects])
 
@@ -301,6 +332,30 @@ function MultiObjectPanel({
           </span>
         )}
       </div>
+
+      {/* ---- Batch Y position ---- */}
+      {allDecorations && (
+        <div className="px-2">
+          <NumberField
+            label="Y"
+            value={commonValues.y ?? 0}
+            onChange={(v) => {
+              // ---- Update Y for all selected objects ----
+              const state = useBuilderStore.getState()
+              for (const id of selectedIds) {
+                const obj = state.objects.find((o) => o.id === id)
+                if (obj) {
+                  state.updateObject(id, {
+                    position: { ...obj.position, y: v },
+                  })
+                }
+              }
+            }}
+            step={0.1}
+            placeholder={commonValues.y === undefined ? 'mixed' : undefined}
+          />
+        </div>
+      )}
 
       {/* ---- Batch rotation (only for decorations) ---- */}
       {allDecorations && (
@@ -369,6 +424,30 @@ function MultiObjectPanel({
             />
             Has collision
             {commonValues.hasCollision === undefined && (
+              <span className="text-[10px] text-zinc-600">(mixed)</span>
+            )}
+          </label>
+        </div>
+      )}
+
+      {/* ---- Batch walkable surface toggle (only for decorations) ---- */}
+      {allDecorations && (
+        <div className="flex items-center gap-2 px-2">
+          <label className="flex items-center gap-1.5 text-xs text-zinc-400">
+            <input
+              type="checkbox"
+              checked={commonValues.walkable ?? false}
+              ref={(el) => {
+                if (el)
+                  el.indeterminate = commonValues.walkable === undefined
+              }}
+              onChange={(e) =>
+                updateObjects(selectedIds, { walkable: e.target.checked })
+              }
+              className="h-3 w-3"
+            />
+            Walkable surface
+            {commonValues.walkable === undefined && (
               <span className="text-[10px] text-zinc-600">(mixed)</span>
             )}
           </label>

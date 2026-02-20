@@ -4,6 +4,7 @@ import CatalogPanel from '@/components/sidebar/CatalogPanel'
 import PropertiesPanel from '@/components/sidebar/PropertiesPanel'
 import ZoneSettings from '@/components/toolbar/ZoneSettings'
 import BuilderCanvas from '@/components/viewport/BuilderCanvas'
+import BoxSelectOverlay from '@/components/viewport/BoxSelectOverlay'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts'
 
 function App() {
@@ -23,6 +24,7 @@ function App() {
         {/* ---- Center: 3D viewport ---- */}
         <div className="relative min-w-0 flex-1">
           <BuilderCanvas />
+          <BoxSelectOverlay />
         </div>
 
         {/* ---- Right sidebar: zone settings + properties ---- */}

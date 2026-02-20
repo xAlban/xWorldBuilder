@@ -100,6 +100,7 @@ export function useKeyboardShortcuts() {
               ...obj,
               position: {
                 x: obj.position.x + 2,
+                y: obj.position.y,
                 z: obj.position.z + 2,
               },
             })
@@ -156,6 +157,7 @@ export function useKeyboardShortcuts() {
               store.updateObject(id, {
                 position: {
                   x: obj.position.x + dx,
+                  y: obj.position.y,
                   z: obj.position.z + dz,
                 },
               })

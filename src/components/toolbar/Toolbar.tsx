@@ -95,6 +95,7 @@ function Toolbar() {
         width: state.zoneWidth,
         height: state.zoneHeight,
         defaultSpawn: state.defaultSpawn,
+        heightmap: state.heightmap,
       },
       objects: state.objects,
       customModels: state.customModels,
@@ -129,6 +130,7 @@ function Toolbar() {
       state.zoneHeight,
       state.defaultSpawn,
       state.objects,
+      state.heightmap,
     )
 
     // ---- Identify new models and generate patch ----

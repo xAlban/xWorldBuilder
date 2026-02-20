@@ -77,7 +77,7 @@ function PlacedObject({ obj }: PlacedObjectProps) {
   return (
     <group
       ref={groupRef}
-      position={[obj.position.x, 0, obj.position.z]}
+      position={[obj.position.x, obj.position.y, obj.position.z]}
       rotation={[0, obj.rotationY, 0]}
       scale={obj.scale}
       onClick={handleClick}

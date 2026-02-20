@@ -1,5 +1,5 @@
 import type { BuilderObject } from '@/types/builder'
-import type { ZoneObject, ZoneDefinition } from '@/types/zone'
+import type { ZoneObject, ZoneDefinition, HeightmapConfig } from '@/types/zone'
 import { CATALOG_BY_ID } from '@/catalog/megakitRegistry'
 
 // ---- Round a number to 2 decimal places ----
@@ -12,7 +12,11 @@ function builderToZoneObject(obj: BuilderObject, index: number): ZoneObject {
   const zo: ZoneObject = {
     id: `${obj.type}-${index}`,
     type: obj.type,
-    position: { x: round2(obj.position.x), z: round2(obj.position.z) },
+    position: {
+      x: round2(obj.position.x),
+      ...(obj.position.y !== 0 ? { y: round2(obj.position.y) } : {}),
+      z: round2(obj.position.z),
+    },
     size: { x: round2(obj.collisionSize.x), z: round2(obj.collisionSize.z) },
   }
 
@@ -21,6 +25,7 @@ function builderToZoneObject(obj: BuilderObject, index: number): ZoneObject {
   if (obj.scale !== 1) zo.scale = round2(obj.scale)
   if (obj.rotationY !== 0) zo.rotationY = round2(obj.rotationY)
   if (obj.noCollision) zo.noCollision = true
+  if (obj.walkable) zo.walkable = true
 
   // ---- Zone portal fields ----
   if (obj.type === 'zonePortal') {
@@ -40,8 +45,9 @@ export function generateZoneDefinition(
   height: number,
   defaultSpawn: { x: number; z: number },
   objects: BuilderObject[],
+  heightmap?: HeightmapConfig | null,
 ): ZoneDefinition {
-  return {
+  const def: ZoneDefinition = {
     id: zoneId,
     name: zoneName,
     groundType,
@@ -50,6 +56,8 @@ export function generateZoneDefinition(
     defaultSpawn: { x: round2(defaultSpawn.x), z: round2(defaultSpawn.z) },
     objects: objects.map((obj, i) => builderToZoneObject(obj, i)),
   }
+  if (heightmap) def.heightmap = heightmap
+  return def
 }
 
 // ---- Identify models not yet in xTactics ----
